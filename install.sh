@@ -46,6 +46,24 @@ ensure_dependencies() {
     done
 }
 
+# Print the path of a qmllint that understands Qt >= 6.3 syntax (App.qml uses
+# `pragma ComponentBehavior: Bound`). A Qt5 or pre-6.3 linter reports a bogus
+# "Expected token `;'" on line 1, so those are skipped rather than trusted.
+find_qmllint() {
+    local candidate version major minor
+    for candidate in qmllint6 qmllint-qt6 qmllint /usr/lib/qt6/bin/qmllint; do
+        has "$candidate" || [[ -x "$candidate" ]] || continue
+        version="$("$candidate" --version 2>/dev/null | grep -Eo '[0-9]+\.[0-9]+' | head -n1)" || true
+        [[ -n "$version" ]] || continue
+        major="${version%%.*}"; minor="${version#*.}"
+        if ((major > 6 || (major == 6 && minor >= 3))); then
+            printf '%s\n' "$candidate"
+            return 0
+        fi
+    done
+    return 1
+}
+
 remove_managed_block() {
     local file="$1" begin="$2" end="$3" tmp
     [[ -f "$file" ]] || return 0
@@ -112,17 +130,18 @@ main() {
     ensure_dependencies
     install_files
     python3 -m py_compile "$INSTALL_DIR/fetch_wallpapers.py"
-    if has qmllint; then
+    local linter
+    if linter="$(find_qmllint)"; then
         local lint_output lint_status=0
-        lint_output="$(qmllint "$INSTALL_DIR/shell.qml" "$INSTALL_DIR/App.qml" "$INSTALL_DIR/Selector.qml" "$INSTALL_DIR/LayoutIcon.qml" "$INSTALL_DIR/WallCard.qml" 2>&1)" || lint_status=$?
+        lint_output="$("$linter" "$INSTALL_DIR/shell.qml" "$INSTALL_DIR/App.qml" "$INSTALL_DIR/Selector.qml" "$INSTALL_DIR/LayoutIcon.qml" "$INSTALL_DIR/WallCard.qml" 2>&1)" || lint_status=$?
         if ((lint_status != 0)); then
             # Some Quickshell builds return 255 because qmllint cannot resolve
             # runtime-provided QML modules, while reporting no actual diagnostic.
-            [[ -z "$lint_output" ]] || die "QML validation failed:\n$lint_output"
+            [[ -z "$lint_output" ]] || die "$(printf 'QML validation failed (%s):\n%s' "$linter" "$lint_output")"
             warn "qmllint could not resolve the Quickshell runtime modules; no QML diagnostic was reported."
         fi
     else
-        warn "qmllint is unavailable; runtime QML validation was skipped."
+        warn "No Qt >= 6.3 qmllint found (older linters cannot parse 'pragma ComponentBehavior'); QML validation skipped."
     fi
     configure_hyprland
     if [[ -n ${HYPRLAND_INSTANCE_SIGNATURE:-} ]]; then
